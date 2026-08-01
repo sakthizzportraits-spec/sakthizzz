@@ -2,4 +2,12 @@
 
 A small starter repository.
 
-This project currently has no functionality — it's a clean slate ready to grow.
+## Getting started
+
+Run the greeting script:
+
+```bash
+python hello.py
+```
+
+It prints a friendly greeting to get things going.
