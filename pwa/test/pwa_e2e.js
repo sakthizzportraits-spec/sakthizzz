@@ -18,12 +18,16 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 (async () => {
   let srv = serve(); await sleep(800);
-  const browser = await chromium.launch({ executablePath: process.env.CHROME || undefined,
+  // a persistent (non-incognito) profile, so the installability check is the real one
+  const os = require('os'), fs = require('fs'), path = require('path');
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'sastra-pwa-'));
+  const ctx = await chromium.launchPersistentContext(profile, { executablePath: process.env.CHROME || undefined,
+    viewport: { width: 1280, height: 800 },
     args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });
-  const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const browser = { close: () => ctx.close() };
   // Google Fonts are unreachable from this sandbox: fail them fast instead of waiting on the proxy
   await ctx.route(/fonts\.(googleapis|gstatic)\.com/, r => r.abort());
-  const page = await ctx.newPage();
+  const page = ctx.pages()[0] || await ctx.newPage();
   const tel = [], errs = [], failed = [];
   page.on('console', m => { const t = m.text(); if (t.startsWith('[TELEMETRY]') || t.startsWith('[PWA]')) tel.push(t); if (m.type() === 'error') errs.push(t); });
   page.on('pageerror', e => errs.push('PAGEERROR ' + e.message));
@@ -66,6 +70,10 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   tel.length = 0;
   await sleep(15000);                                  // let the texture cache write in its idle slices
 
+  log('texture cache before the dead zone:', JSON.stringify(await page.evaluate(() => {
+    const s = window.__campusTex && window.__campusTex.stats; return s && { rows: s.rows, recorded: s.recorded, written: s.written, writtenMB: s.writtenMB, skipped: s.skipped };
+  })));
+
   // ---- dead zone: the server is gone -------------------------------------
   srv.kill('SIGKILL'); await sleep(500);
   failed.length = 0;
@@ -85,6 +93,7 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
   await sleep(5000);
   log('TELEMETRY (offline):\n  ' + tel.join('\n  '));
   log('failed requests while offline:', JSON.stringify([...new Set(failed)]));
-  log('page errors:', JSON.stringify(errs.slice(0, 10)));
+  log('page exceptions:', JSON.stringify(errs.filter(e => e.startsWith('PAGEERROR'))));
+  log('console errors (other):', JSON.stringify([...new Set(errs.filter(e => !e.startsWith('PAGEERROR')))]));
   await browser.close();
 })().catch(e => { console.error('TEST FAILED', e); process.exit(1); });

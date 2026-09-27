@@ -23,7 +23,7 @@
                    "update ready").
 
    UPDATES are atomic: build_pwa.py writes VERSION = buildStamp + a hash of
-   index.html, so a new page means a byte-different sw.js, which the
+   index.html and this worker, so a new page means a byte-different sw.js, which the
    browser picks up on the next navigation (updateViaCache: 'none').
    Never deploy a new index.html without the sw.js the build wrote with it.
    ========================================================================= */
@@ -119,7 +119,7 @@ self.addEventListener('fetch', function (event) {
     return;
   }
   if (url.origin === self.location.origin) {
-    if (url.href.indexOf(SCOPE) === 0) event.respondWith(cacheThenNetwork(req, SHELL_CACHE));
+    if (url.href.indexOf(SCOPE) === 0) event.respondWith(cacheThenNetwork(req, SHELL_CACHE, true));   /* e.g. images/velaa_logo.jpg if deployed */
     return;
   }
   if (url.hostname === 'fonts.googleapis.com') { event.respondWith(staleWhileRevalidate(req, FONT_CACHE)); return; }

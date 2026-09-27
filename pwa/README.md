@@ -44,7 +44,7 @@ Rules for the host:
 - Keep the page, `sw.js` and the manifest in **one directory** (the service-worker scope). Any other
   HTML placed in the same directory would receive the map when navigated to offline.
 - **Always deploy `index.html` and the `sw.js` the build wrote with it together.** `sw.js` carries
-  `VERSION = buildStamp.sha256(index.html)[:12]`. A new page produces a byte-different `sw.js`, which
+  `VERSION = buildStamp.sha256(index.html + worker)[:12]`. A new page produces a byte-different `sw.js`, which
   is how every installed copy learns there is an update.
 - Visitors should get a **Final (viewer) build**. Export it from the World Editor
   (`SastraMap_Final.html`) and run the build on that file. The Dev build mounts the editor on desktop
@@ -89,15 +89,20 @@ routers. So the service worker caches that one response.
 |---|---|
 | Navigation to the page (any `?query` or `#hash`) | **Cache first**, network only if nothing is cached yet |
 | `manifest.webmanifest`, `icons/*` | Pre-cached at install (best effort), then cache first |
+| Other same-origin files in the folder (e.g. the optional `images/velaa_logo.jpg`, which the map replaces with a painted sign when absent) | Cache first; kept after the first successful fetch |
 | `fonts.googleapis.com` stylesheet | Stale-while-revalidate |
 | `fonts.gstatic.com` font files | Cache first. The install step pre-fetches every file the stylesheet names |
 | Anything else | Not handled (the page CSP forbids it anyway) |
 
 In a dead zone the map therefore boots, draws the 3D campus, routes with both A* routers (grid
-navmesh and road graph) and shows the GPS blue dot. GPS itself needs no data connection. The
-procedural textures come from the IndexedDB texture cache, so an offline boot is faster than a
-first visit. The only thing that can be missing offline is a web font that has never been fetched;
-the UI then falls back to system fonts.
+navmesh and road graph) and shows the GPS blue dot. GPS itself needs no data connection. Once
+the map's own IndexedDB texture cache has finished saving (it writes in idle time after a visit),
+an offline boot also skips repainting the textures; until then it repaints them, exactly as an
+online first visit does. The only thing that can be missing offline is a web font that has never
+been fetched; the UI then falls back to system fonts.
+
+`navigator.onLine` stays `true` when the phone has Wi-Fi but the Wi-Fi has no internet, a common
+campus dead zone. The worker does not care: the shell is served from the cache either way.
 
 **Updates.** The browser re-checks `sw.js` on each launch (`updateViaCache: 'none'`). When it
 changed, the new worker pre-caches the new page, activates, deletes the old shell cache, and the

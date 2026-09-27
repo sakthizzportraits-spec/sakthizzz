@@ -7,7 +7,7 @@
 
 Writes into the output folder:
     index.html            the map with the PWA1 + TEL1 blocks injected
-    sw.js                 the service worker, VERSION = buildStamp + page hash
+    sw.js                 the service worker, VERSION = buildStamp + hash of page and worker
     manifest.webmanifest  install metadata (start_url follows --name)
     icons/                the crest icons
 
@@ -137,8 +137,9 @@ def main():
     with open(os.path.join(a.out, a.name), 'w', encoding='utf-8') as f:
         f.write(page)
 
-    version = '%s.%s' % (build_stamp(page), hashlib.sha256(page.encode('utf-8')).hexdigest()[:12])
     sw = read(os.path.join(SRC, 'sw.js'))
+    # a new page OR new worker logic rolls the cache name
+    version = '%s.%s' % (build_stamp(page), hashlib.sha256((page + sw).encode('utf-8')).hexdigest()[:12])
     sw = sw.replace('__VERSION__', version).replace('__SHELL__', a.name).replace('__FONT_CSS__', font_css(page))
     sw_path = os.path.join(a.out, 'sw.js')
     with open(sw_path, 'w', encoding='utf-8') as f:

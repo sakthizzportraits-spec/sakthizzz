@@ -127,7 +127,7 @@
       if (!t) return null;
       var n = typeof meta.results === 'number' ? meta.results : null;
       var summary = 'Search: "' + t + '"' + (meta.chosen ? ' → ' + meta.chosen : '') +
-                    (n === 0 ? ' - no results' : n != null ? ' (' + n + ' results)' : '');
+                    (n === 0 ? ' - no results' : n != null ? ' (' + n + (n === 1 ? ' result)' : ' results)') : '');
       return this.track('search_query', { term: t, results: n, chosen: meta.chosen || null,
                                           chosenKey: meta.chosenKey || null, via: meta.via || null }, summary);
     }
@@ -206,10 +206,14 @@
     var sig = [d.key, d.part || '', d.src, d.from].join('|');
     if (sig === ROUTE.sig) return;                    /* the moving dot re-planning the same trip */
     ROUTE.sig = sig;
-    var to = CARD.name || d.key, from = d.src === 'gps' ? 'your location' : (d.from || 'Main Gate');
-    var dist = d.m, mins = d.mins, key = d.part || d.key, src = d.src;
-    setTimeout(function () {                           /* the plan's node chain, once the module has stored it */
-      var path = null, vertex = null;
+    var from = d.src === 'gps' ? 'your location' : (d.from || 'Main Gate');
+    var dist = d.m, mins = d.mins, key = d.part || d.key, src = d.src, routeKey = d.key;
+    /* deferred: the route module answers 'sastra:card' before this module
+       does, so its 'sastra:route' can arrive before CARD knows the name */
+    setTimeout(function () {
+      var to = (CARD.key === routeKey && CARD.name) || null, path = null, vertex = null;
+      if (!to) { try { var cs = window.SastraCard && window.SastraCard.state(); if (cs && cs.key === routeKey) to = cs.name; } catch (err) {} }
+      to = to || routeKey;
       try {
         var st = window.SastraRoute && window.SastraRoute.state();
         if (st && st.route && st.route.ids) path = st.route.ids.slice(0, 64);
@@ -264,11 +268,19 @@
       if (!list) return null;
       return list.querySelectorAll('li:not(.ax-none)').length;
     }
+    function keyOf(term, chosen) {                     /* a stable id for aggregation, not the display name */
+      if (!chosen) return null;
+      try {
+        var f = window.SastraAccess && window.SastraAccess.find(term) || [];
+        for (var i = 0; i < f.length; i++) if (f[i].name === chosen) return f[i].id || null;
+      } catch (e) {}
+      return null;
+    }
     function log(term, chosen, via, n) {
       var sig = cleanTerm(term).toLowerCase() + '|' + (chosen || '');
       if (!cleanTerm(term) || sig === lastLogged) return;
       lastLogged = sig;
-      A.onSearchQuery(term, { results: n, chosen: chosen || null, via: via });
+      A.onSearchQuery(term, { results: n, chosen: chosen || null, chosenKey: keyOf(term, chosen), via: via });
     }
     document.addEventListener('keydown', function (e) {
       if (e.target !== inp || e.key !== 'Enter' || !inp.value.trim()) return;
