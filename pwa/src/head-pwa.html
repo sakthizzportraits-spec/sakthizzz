@@ -1,0 +1,23 @@
+<!-- PWA1:BEGIN head =====================================================
+     PWA · INSTALLABLE SHELL  (markers PWA1)
+     Home-screen install on Android (manifest + service worker) and iOS
+     (the apple-* tags; iOS Safari has no install prompt and reads these).
+     "standalone" removes the browser chrome (URL bar) when the map is
+     opened from the home screen. The status bar is "black" rather than
+     "black-translucent": the HUD is positioned from the top edge, so a
+     translucent bar would sit over #brand and the gear.
+     manifest.webmanifest, sw.js and icons/ are real files served next to
+     this page. A service worker cannot be a data: or blob: URL, so offline
+     support needs them on HTTPS (or http://localhost).
+     ===================================================================== -->
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="apple-mobile-web-app-title" content="SASTRA Map">
+<meta name="application-name" content="SASTRA Map">
+<meta name="format-detection" content="telephone=no">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="apple-touch-icon" sizes="180x180" href="icons/apple-touch-icon.png">
+<!-- PWA1:END head -->

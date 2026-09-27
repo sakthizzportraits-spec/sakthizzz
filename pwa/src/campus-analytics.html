@@ -1,0 +1,316 @@
+<!-- TEL1:BEGIN analytics -->
+<script>
+/* =========================================================================
+   CAMPUS ANALYTICS  -  privacy-first usage telemetry  (markers TEL1)
+   API window.CampusAnalytics (the class), window.campusAnalytics (the live one)
+
+   WHAT  One small event recorder with five hooks:
+           onSearchQuery(term, meta)                    a committed search, or one with no results
+           onRouteGenerated(startNode, endNode, metres, meta)   a walking route was drawn
+           onPOIToggled(type, on)                       Food / Restrooms / ATM / Bus / Parking pins
+           onBuildingViewed(key, name)                  a building card opened
+           onAppLaunch()                                once per load: installed or browser, on/offline
+         Each event is plain JSON and goes to every registered sink. THIS
+         BUILD HAS ONE SINK, THE CONSOLE:
+           [TELEMETRY] Route generated: Main Gate to JVC - 450m
+           {"v":1,"type":"route_generated","t":"2026-09-27T08:15:00Z",...}
+         The page CSP (connect-src 'none') means nothing can leave the device
+         until an administrator adds an endpoint (see pwa/README.md).
+
+   PRIVACY  No cookies and no persistent id: the session id is 64 random
+         bits from crypto.getRandomValues, held in memory for one page load.
+         (Math.random is the SEEDED world stream here and would hand every
+         visitor the same id.) Time is rounded to the minute. No user agent,
+         no IP, no raw coordinates: a GPS-started route reports "your
+         location" and the road-graph vertex it snapped to. Search text is
+         trimmed, capped at 48 characters, and anything that looks like an
+         e-mail address or a long number (phone, roll number) is redacted.
+         Global Privacy Control / Do Not Track, or
+         localStorage 'sastra.telemetry' = 'off', turn recording off.
+         ?telemetry=0 turns it off for one visit; ?telemetry=1 forces it on
+         (demos).
+
+   HOOKS  Everything is observed from outside; no host code is edited:
+         search   #axSearchIn: Enter / a result click (capture phase, before
+                  the box rewrites its value), and a typed query that settles
+                  for 1.5 s with no results (unmet demand)
+         routes   'sastra:route' (the card's road route; re-plans of a moving
+                  GPS dot are not re-counted) and the Route button's grid
+                  router, by wrapping the global nmRouteBuildings()
+         POIs     aria-pressed on the pin pills (#pxFood ... #pxPark), or on
+                  #euFood / #euWC when the pin module is off
+         cards    'sastra:card'
+   COST  Nothing per frame. No Object3D, no DOM, no network, no timers
+         except the 1.5 s search debounce.
+   ========================================================================= */
+(function () {
+  'use strict';
+  if (window.campusAnalytics) return;                 /* one recorder per page */
+
+  var BUFFER_MAX = 500;
+  var OFF_KEY = 'sastra.telemetry';
+  function param(k) { try { return new URLSearchParams(location.search).get(k); } catch (e) { return null; } }
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch (e) {} }
+  function mq(q) { try { return matchMedia(q).matches; } catch (e) { return false; } }
+
+  function randomId() {
+    var b = new Uint8Array(8), s = '', i;
+    try { (window.crypto || window.msCrypto).getRandomValues(b); }
+    catch (e) { for (i = 0; i < 8; i++) b[i] = Math.floor((Math.__nativeRandom || Math.random)() * 256); }
+    for (i = 0; i < 8; i++) s += (b[i] < 16 ? '0' : '') + b[i].toString(16);
+    return s;
+  }
+  function minuteIso() {
+    var d = new Date(); d.setSeconds(0, 0);
+    return d.toISOString().replace('.000Z', 'Z');
+  }
+  function privacySignal() {
+    return navigator.globalPrivacyControl === true || navigator.doNotTrack === '1' || window.doNotTrack === '1';
+  }
+  function cleanTerm(s) {
+    s = String(s == null ? '' : s).replace(/\s+/g, ' ').trim();
+    s = s.replace(/[^\s@]+@[^\s@]+/g, '[email]').replace(/\+?\d[\d\s-]{5,}\d/g, '[number]');
+    return s.length > 48 ? s.slice(0, 48) : s;
+  }
+  function metres(m) { return (typeof m === 'number' && isFinite(m)) ? Math.round(m) : null; }
+  function displayMode() {
+    return (mq('(display-mode: standalone)') || navigator.standalone === true) ? 'standalone'
+         : mq('(display-mode: fullscreen)') ? 'fullscreen' : 'browser';
+  }
+
+  /* ----------------------------------------------------------------------
+     THE RECORDER
+     -------------------------------------------------------------------- */
+  class CampusAnalytics {
+    constructor(opts) {
+      opts = opts || {};
+      var q = param('telemetry');
+      this.enabled = q === '1' ? true : q === '0' ? false : !(lsGet(OFF_KEY) === 'off' || privacySignal());
+      this.session = randomId();
+      this.seq = 0;
+      this.buffer = [];
+      this.sinks = [];
+      this.build = opts.build || null;
+      if (opts.console !== false) this.addSink(CampusAnalytics.consoleSink);
+    }
+
+    /* the one console format: a readable line, then the event as JSON */
+    static consoleSink(evt, summary) {
+      if (window.console) console.info('[TELEMETRY] ' + summary + '\n' + JSON.stringify(evt));
+    }
+    addSink(fn) { if (typeof fn === 'function' && this.sinks.indexOf(fn) < 0) this.sinks.push(fn); return this; }
+    removeSink(fn) { var i = this.sinks.indexOf(fn); if (i >= 0) this.sinks.splice(i, 1); return this; }
+
+    context() {
+      var G = window.__campusGfx;
+      return { display: displayMode(), online: navigator.onLine !== false,
+               tier: (G && G.tier) || null, lang: (navigator.language || '').slice(0, 5), build: this.build };
+    }
+
+    track(type, data, summary) {
+      if (!this.enabled) return null;
+      var evt = { v: 1, type: type, t: minuteIso(), seq: ++this.seq, sid: this.session,
+                  ctx: this.context(), data: data || {} };
+      this.buffer.push(evt);
+      if (this.buffer.length > BUFFER_MAX) this.buffer.shift();
+      for (var i = 0; i < this.sinks.length; i++) {
+        try { this.sinks[i](evt, summary || type); } catch (e) { /* a sink never breaks the app */ }
+      }
+      return evt;
+    }
+
+    /* ---- the hooks -------------------------------------------------- */
+    onSearchQuery(term, meta) {
+      meta = meta || {};
+      var t = cleanTerm(term);
+      if (!t) return null;
+      var n = typeof meta.results === 'number' ? meta.results : null;
+      var summary = 'Search: "' + t + '"' + (meta.chosen ? ' → ' + meta.chosen : '') +
+                    (n === 0 ? ' - no results' : n != null ? ' (' + n + (n === 1 ? ' result)' : ' results)') : '');
+      return this.track('search_query', { term: t, results: n, chosen: meta.chosen || null,
+                                          chosenKey: meta.chosenKey || null, via: meta.via || null }, summary);
+    }
+    onRouteGenerated(startNode, endNode, distance, meta) {
+      meta = meta || {};
+      var from = String(startNode || 'Main Gate'), to = String(endNode || 'unknown'), m = metres(distance);
+      var summary = 'Route generated: ' + from + ' to ' + to + ' - ' + (m != null ? m + 'm' : '?');
+      return this.track('route_generated', {
+        start: from, end: to, metres: m, minutes: meta.minutes || null, router: meta.router || null,
+        startKind: meta.startKind || null, startVertex: meta.startVertex != null ? meta.startVertex : null,
+        endKey: meta.endKey || null, path: meta.path || null, partial: !!meta.partial }, summary);
+    }
+    onPOIToggled(type, on) {
+      var state = on === false ? 'off' : 'on';
+      return this.track('poi_toggled', { poi: String(type), state: state },
+                        'POI toggled: ' + type + ' ' + state.toUpperCase());
+    }
+    onBuildingViewed(key, name) {
+      return this.track('building_viewed', { key: key || null, name: name || null },
+                        'Building viewed: ' + (name || key));
+    }
+    onAppLaunch() {
+      var B = window.__campusBoot, c = this.context();
+      return this.track('app_launch', { bootMs: B && B.readyAt ? Math.round(B.readyAt) : null },
+                        'App launched: ' + c.display + (c.online ? ', online' : ', offline'));
+    }
+
+    /* ---- consent + export ------------------------------------------- */
+    optOut() { lsSet(OFF_KEY, 'off'); this.enabled = false; this.buffer.length = 0; return false; }
+    optIn() { lsSet(OFF_KEY, null); this.enabled = !privacySignal(); return this.enabled; }
+    export() { return JSON.stringify(this.buffer); }
+  }
+
+  /* the layout payload follows this script in the document, so the build
+     stamp is read once the page is up (whenReady below) */
+  function readBuildStamp() {
+    try {
+      var W = window.WorldEditor;
+      if (W && W.ED && W.ED.data && W.ED.data.buildStamp) return W.ED.data.buildStamp;
+      var md = document.getElementById('sathizz-map-data');
+      var raw = md && md.textContent ? md.textContent.trim() : '';
+      var m = /buildStamp%22%3A%22([^%]+)%22|"buildStamp":"([^"]+)"/.exec(raw);
+      return m ? (m[1] || m[2]) : null;
+    } catch (e) { return null; }
+  }
+  var A = new CampusAnalytics();
+  window.CampusAnalytics = CampusAnalytics;
+  window.campusAnalytics = A;
+
+  /* ----------------------------------------------------------------------
+     THE WIRING - after 'campus:ready', when every module has built its DOM
+     -------------------------------------------------------------------- */
+  function whenReady(fn) {
+    if (window.__campusBoot && window.__campusBoot.done) fn();
+    else document.addEventListener('campus:ready', fn, { once: true });
+  }
+
+  /* ---- cards: the building a route ends at is the open card's --------- */
+  var CARD = { open: false, key: null, name: null, lastKey: null, lastAt: 0 };
+  window.addEventListener('sastra:card', function (e) {
+    var d = (e && e.detail) || {};
+    CARD.open = !!d.open;
+    if (!d.open) { CARD.key = null; CARD.name = null; ROUTE.sig = null; return; }
+    CARD.key = d.key || null; CARD.name = d.name || null;
+    var now = Date.now();
+    if (d.key && (d.key !== CARD.lastKey || now - CARD.lastAt > 1500)) A.onBuildingViewed(d.key, d.name);
+    CARD.lastKey = d.key; CARD.lastAt = now;
+  });
+
+  /* ---- routes (1): the card's road route ------------------------------ */
+  var ROUTE = { sig: null };
+  window.addEventListener('sastra:route', function (e) {
+    var d = e && e.detail;
+    if (!d) { ROUTE.sig = null; return; }
+    if (!d.route || !isFinite(d.m)) return;
+    var sig = [d.key, d.part || '', d.src, d.from].join('|');
+    if (sig === ROUTE.sig) return;                    /* the moving dot re-planning the same trip */
+    ROUTE.sig = sig;
+    var from = d.src === 'gps' ? 'your location' : (d.from || 'Main Gate');
+    var dist = d.m, mins = d.mins, key = d.part || d.key, src = d.src, routeKey = d.key;
+    /* deferred: the route module answers 'sastra:card' before this module
+       does, so its 'sastra:route' can arrive before CARD knows the name */
+    setTimeout(function () {
+      var to = (CARD.key === routeKey && CARD.name) || null, path = null, vertex = null;
+      if (!to) { try { var cs = window.SastraCard && window.SastraCard.state(); if (cs && cs.key === routeKey) to = cs.name; } catch (err) {} }
+      to = to || routeKey;
+      try {
+        var st = window.SastraRoute && window.SastraRoute.state();
+        if (st && st.route && st.route.ids) path = st.route.ids.slice(0, 64);
+        if (st && st.origin && st.origin.vertex && src !== 'gate') vertex = st.origin.vertex.id;
+      } catch (err) { /* the route is decoration; so is its telemetry */ }
+      A.onRouteGenerated(from, to, dist, { router: 'road', minutes: mins, startKind: src, startVertex: vertex,
+                                           endKey: key, path: path });
+    }, 0);
+  });
+
+  whenReady(function () {
+    if (!A.build) A.build = readBuildStamp();
+    A.onAppLaunch();
+
+    /* ---- routes (2): the Route button's grid navmesh ------------------- */
+    try {
+      var orig = window.nmRouteBuildings;
+      if (typeof orig === 'function' && !orig.__tel1) {
+        var wrapped = function () {
+          var r = orig.apply(this, arguments);
+          try {
+            if (r && !r.adjacent) A.onRouteGenerated(r.from, r.to, r.metres,
+              { router: 'grid', startKind: 'building', partial: !!r.partial });
+          } catch (e) { /* never in the way of the route */ }
+          return r;
+        };
+        wrapped.__tel1 = true;
+        window.nmRouteBuildings = wrapped;           /* a global function declaration: nmPickBuilding() calls through this binding */
+      }
+    } catch (e) { /* no grid router in this build */ }
+
+    /* ---- POI pins --------------------------------------------------------- */
+    var PINS = [['pxFood', 'food'], ['pxWC', 'restrooms'], ['pxATM', 'atm'], ['pxBus', 'bus'], ['pxPark', 'parking']];
+    if (!document.getElementById('pxFood')) PINS = [['euFood', 'food'], ['euWC', 'restrooms']];
+    if (typeof MutationObserver === 'function') {
+      PINS.forEach(function (p) {
+        var el = document.getElementById(p[0]);
+        if (!el) return;
+        var last = el.getAttribute('aria-pressed') === 'true';
+        new MutationObserver(function () {
+          var on = el.getAttribute('aria-pressed') === 'true';
+          if (on !== last) { last = on; A.onPOIToggled(p[1], on); }
+        }).observe(el, { attributes: true, attributeFilter: ['aria-pressed'] });
+      });
+    }
+
+    /* ---- search ------------------------------------------------------------ */
+    var inp = document.getElementById('axSearchIn'), list = document.getElementById('axSearchList');
+    if (!inp) return;
+    var lastLogged = '', settleT = 0;
+    function results() {
+      if (!list) return null;
+      return list.querySelectorAll('li:not(.ax-none)').length;
+    }
+    function keyOf(term, chosen) {                     /* a stable id for aggregation, not the display name */
+      if (!chosen) return null;
+      try {
+        var f = window.SastraAccess && window.SastraAccess.find(term) || [];
+        for (var i = 0; i < f.length; i++) if (f[i].name === chosen) return f[i].id || null;
+      } catch (e) {}
+      return null;
+    }
+    function log(term, chosen, via, n) {
+      var sig = cleanTerm(term).toLowerCase() + '|' + (chosen || '');
+      if (!cleanTerm(term) || sig === lastLogged) return;
+      lastLogged = sig;
+      A.onSearchQuery(term, { results: n, chosen: chosen || null, chosenKey: keyOf(term, chosen), via: via });
+    }
+    document.addEventListener('keydown', function (e) {
+      if (e.target !== inp || e.key !== 'Enter' || !inp.value.trim()) return;
+      clearTimeout(settleT);
+      var act = inp.getAttribute('aria-activedescendant'), li = act && document.getElementById(act), chosen = null;
+      if (li && li.querySelector('b')) chosen = li.querySelector('b').textContent;
+      else {
+        try { var f = window.SastraAccess && window.SastraAccess.find(inp.value); chosen = f && f.length ? f[0].name : null; }
+        catch (err) { chosen = null; }
+      }
+      log(inp.value, chosen, 'enter', results());
+    }, true);
+    document.addEventListener('click', function (e) {
+      var li = e.target && e.target.closest && e.target.closest('#axSearchList li');
+      if (!li || li.classList.contains('ax-none')) return;
+      clearTimeout(settleT);
+      var b = li.querySelector('b');
+      log(inp.value, b ? b.textContent : null, 'pick', results());
+    }, true);
+    inp.addEventListener('input', function () {
+      clearTimeout(settleT);
+      var term = inp.value;
+      if (cleanTerm(term).length < 3) return;
+      settleT = setTimeout(function () {
+        if (inp.value !== term) return;
+        var n = results();
+        if (n === 0) log(term, null, 'typing', 0);    /* people looked for something the map does not have */
+      }, 1500);
+    });
+  });
+})();
+</script>
+<!-- TEL1:END analytics -->

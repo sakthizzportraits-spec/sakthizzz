@@ -1,0 +1,235 @@
+<!-- PWA1:BEGIN shell -->
+<script>
+/* =========================================================================
+   PWA · OFFLINE SHELL + INSTALL PROMPT  (markers PWA1)   API window.SastraPWA
+
+   WHAT  Registers sw.js (the offline cache), announces "saved for offline
+         use" / "update ready" / "offline" / "back online" through the host
+         toast, and offers installation: on Android Chrome the deferred
+         beforeinstallprompt drives an "Install" chip; on iOS Safari, which
+         has no prompt, the same chip explains Share > Add to Home Screen.
+
+   WHY THE REGISTRATION WAITS. Nothing here runs during the boot. The
+         register() call is armed on 'campus:ready' and then waits 4 s and
+         an idle slot, so it never competes with init(), the parallel shader
+         link, the World-Editor rebuild or the first frames the governor
+         measures. The worker then installs on its own thread. If the boot
+         never releases (no WebGL), a 90 s fallback after 'load' registers
+         anyway. The render loop is never touched: this block adds no
+         Object3D, no frame hook and draws no random numbers.
+
+   RULES The chip is DOM (#pwaCSS, #pwaChip), on the exporter's strip list,
+         removed here if an export baked a copy, hidden in walk / drive / Zen
+         and under the card sheet (z 31 < card 33). No backdrop-filter on
+         phones (the coarse-device glass budget). A dismissal is remembered
+         for 30 days (localStorage sastra.pwa.hint).
+
+   FLAGS ?sw=0 skips registration for this visit. SastraPWA.unregister()
+         removes the worker and its caches (debugging).
+   ========================================================================= */
+(function () {
+  'use strict';
+  ['pwaCSS', 'pwaChip'].forEach(function (id) {
+    var n; while ((n = document.getElementById(id))) n.parentNode.removeChild(n);
+  });
+
+  var HINT_KEY = 'sastra.pwa.hint', HINT_DAYS = 30, HINT_DELAY = 25000, HINT_SHOW = 16000;
+  function param(k) { try { return new URLSearchParams(location.search).get(k); } catch (e) { return null; } }
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* private mode */ } }
+  function wake() { if (typeof window.__mapWake === 'function') { try { window.__mapWake(); } catch (e) {} } }
+  /* the host toast is advanced by the render loop, so the loop is woken to clear it */
+  function say(msg) {
+    try { if (typeof window.toast === 'function') { window.toast(msg); wake(); return; } } catch (e) {}
+    if (window.console) console.info('[PWA] ' + msg);
+  }
+  function mq(q) { try { return matchMedia(q).matches; } catch (e) { return false; } }
+  function standalone() {
+    return mq('(display-mode: standalone)') || mq('(display-mode: fullscreen)') || navigator.standalone === true;
+  }
+  var UA = navigator.userAgent || '';
+  var IOS = /iP(hone|ad|od)/.test(UA) || (/Macintosh/.test(UA) && (navigator.maxTouchPoints | 0) > 1);
+  var IOS_SAFARI = IOS && /Safari\//.test(UA) && !/CriOS|FxiOS|EdgiOS|OPiOS/.test(UA);
+  var COARSE = mq('(pointer: coarse)');
+
+  var P = {
+    supported: 'serviceWorker' in navigator, secure: window.isSecureContext === true,
+    state: 'idle', reg: null, version: null, error: null, registeredAt: 0,
+    offlineReady: false, updated: false, installEvt: null, installed: standalone(), chip: 'none'
+  };
+
+  /* ---------------------------------------------------------- registration */
+  function register() {
+    if (P.state !== 'idle') return;
+    if (param('sw') === '0') { P.state = 'skipped'; return; }
+    if (!P.supported || !P.secure || location.protocol === 'file:') { P.state = 'unsupported'; return; }
+    P.state = 'registering';
+    var hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('message', function (e) {
+      var d = e.data || {};
+      if (d.type !== 'sastra-sw') return;
+      if (d.version) P.version = d.version;
+      if (d.event === 'activated') {
+        P.offlineReady = true;
+        if (hadController) { P.updated = true; say('Map updated — reopen it to use the new version'); }
+        else say('Campus map saved — it now works offline');
+        persist();
+      }
+    });
+    navigator.serviceWorker.register('sw.js', { scope: './', updateViaCache: 'none' }).then(function (reg) {
+      P.reg = reg; P.state = 'registered'; P.registeredAt = Math.round(performance.now());
+      if (reg.active) { P.offlineReady = true; reg.active.postMessage({ type: 'sastra-sw', ask: 'version' }); persist(); }
+    }, function (err) {
+      P.state = 'failed'; P.error = String(err && err.message || err);
+      if (window.console) console.warn('[PWA] service worker not registered: ' + P.error);
+    });
+  }
+  /* an installed app asks the browser not to evict its caches (no prompt in Chrome / Safari) */
+  function persist() {
+    if (!standalone() || !navigator.storage || !navigator.storage.persist) return;
+    navigator.storage.persisted().then(function (on) { if (!on) return navigator.storage.persist(); }).catch(function () {});
+  }
+  function later(fn, ms) {
+    setTimeout(function () {
+      if (window.requestIdleCallback) requestIdleCallback(fn, { timeout: 5000 }); else fn();
+    }, ms);
+  }
+  if (window.__campusBoot && window.__campusBoot.done) later(register, 4000);
+  else document.addEventListener('campus:ready', function () { later(register, 4000); }, { once: true });
+  window.addEventListener('load', function () { setTimeout(register, 90000); }, { once: true });
+
+  window.addEventListener('offline', function () {
+    say(P.offlineReady ? 'Offline — the map keeps working on this device' : 'Offline');
+  });
+  window.addEventListener('online', function () {
+    say('Back online');
+    if (P.reg) P.reg.update().catch(function () {});
+  });
+
+  /* ---------------------------------------------------------- install chip */
+  var css = document.createElement('style');
+  css.id = 'pwaCSS';
+  css.textContent = [
+    '#pwaChip{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));z-index:31;',
+    '  transform:translateX(-50%) translateY(12px);opacity:0;pointer-events:none;box-sizing:border-box;',
+    '  display:flex;align-items:center;gap:10px;max-width:min(430px,calc(100vw - 24px));padding:10px 10px 10px 14px;',
+    '  border-radius:16px;background:rgba(16,22,36,.92);border:1px solid rgba(255,255,255,.16);color:#EEF2FA;',
+    '  font:500 13px/1.35 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,Arial,sans-serif;',
+    '  box-shadow:0 14px 34px rgba(0,0,0,.45);transition:opacity .35s ease,transform .35s ease}',
+    '@media (min-width:901px){#pwaChip{background:rgba(16,22,36,.72);-webkit-backdrop-filter:blur(14px) saturate(1.3);backdrop-filter:blur(14px) saturate(1.3)}}',
+    '#pwaChip.on{opacity:1;transform:translateX(-50%) translateY(0);pointer-events:auto}',
+    '#pwaChip .pw-ic{flex:none;width:34px;height:34px;border-radius:9px;display:grid;place-items:center;',
+    '  font:800 12px/1 Georgia,serif;color:#2a1c05;background:linear-gradient(160deg,#f3cb62,#a97c18 60%,#6a4a0d)}',
+    '#pwaChip .pw-t{flex:1;min-width:0}',
+    '#pwaChip .pw-t b{display:block;font-weight:700;color:#fff}',
+    '#pwaChip .pw-go{flex:none;height:32px;padding:0 14px;border:0;border-radius:999px;cursor:pointer;',
+    '  background:linear-gradient(160deg,#F2D57A,#C99A2E);color:#1b1407;font:700 12.5px/32px inherit;font-family:inherit}',
+    '#pwaChip .pw-x{flex:none;width:30px;height:30px;border:0;border-radius:50%;cursor:pointer;background:rgba(255,255,255,.1);',
+    '  color:#dfe6f2;font:600 16px/30px inherit;font-family:inherit}',
+    '#pwaChip button:focus-visible{outline:2px solid #E6C35C;outline-offset:2px}',
+    'body.cc-play #pwaChip,body.drv-play #pwaChip,body.eu-zen #pwaChip{display:none!important}',
+    '@media (prefers-reduced-motion:reduce){#pwaChip{transition:none}}'
+  ].join('\n');
+  document.head.appendChild(css);
+
+  var chip = null, hideT = 0;
+  function dismissedRecently() {
+    var t = +lsGet(HINT_KEY) || 0;
+    return t && (Date.now() - t) < HINT_DAYS * 864e5;
+  }
+  function buildChip(kind) {
+    chip = document.createElement('div');
+    chip.id = 'pwaChip';
+    chip.setAttribute('role', 'dialog');
+    chip.setAttribute('aria-label', 'Install the campus map');
+    var body = kind === 'ios'
+      ? '<b>Install SASTRA Map</b>Tap Share, then “Add to Home Screen”. It opens full-screen and works offline.'
+      : '<b>Install SASTRA Map</b>Full-screen, from your home screen, and it works offline.';
+    chip.innerHTML = '<span class="pw-ic" aria-hidden="true">SU</span><span class="pw-t">' + body + '</span>' +
+      (kind === 'ios' ? '' : '<button type="button" class="pw-go">Install</button>') +
+      '<button type="button" class="pw-x" aria-label="Not now">×</button>';
+    ['pointerdown', 'pointerup', 'click', 'wheel', 'touchstart'].forEach(function (t) {
+      chip.addEventListener(t, function (e) { e.stopPropagation(); }, { passive: true });
+    });
+    chip.querySelector('.pw-x').addEventListener('click', function () { lsSet(HINT_KEY, String(Date.now())); hideChip(); });
+    var go = chip.querySelector('.pw-go');
+    if (go) go.addEventListener('click', function () { install(); });
+    document.body.appendChild(chip);
+  }
+  function showChip(kind) {
+    if (P.installed || standalone() || dismissedRecently() || !document.body) return;
+    var C = window.SastraCard;
+    try { if (C && C.isOpen && C.isOpen() && !mq('(min-width: 901px)')) { later(function () { showChip(kind); }, 20000); return; } } catch (e) {}
+    if (!chip) buildChip(kind);
+    P.chip = kind;
+    requestAnimationFrame(function () { if (chip) chip.classList.add('on'); });
+    clearTimeout(hideT);
+    hideT = setTimeout(hideChip, HINT_SHOW);
+  }
+  function hideChip() {
+    clearTimeout(hideT);
+    if (chip) chip.classList.remove('on');
+  }
+  function install() {
+    var e = P.installEvt;
+    if (!e) {
+      if (IOS_SAFARI) showChip('ios');
+      return Promise.resolve(IOS_SAFARI ? 'instructions' : 'unavailable');
+    }
+    P.installEvt = null;
+    hideChip();
+    try {
+      e.prompt();
+      return e.userChoice.then(function (c) {
+        if (c && c.outcome === 'dismissed') lsSet(HINT_KEY, String(Date.now()));
+        return c && c.outcome;
+      }, function () { return 'error'; });
+    } catch (err) { return Promise.resolve('error'); }
+  }
+  function afterReady(fn, ms) {
+    if (window.__campusBoot && window.__campusBoot.done) setTimeout(fn, ms);
+    else document.addEventListener('campus:ready', function () { setTimeout(fn, ms); }, { once: true });
+  }
+
+  /* Android / Chromium on touch devices: our chip instead of the mini-infobar.
+     Desktop keeps the browser's own install button in the address bar. */
+  window.addEventListener('beforeinstallprompt', function (e) {
+    if (!COARSE) return;
+    e.preventDefault();
+    P.installEvt = e;
+    afterReady(function () { showChip('android'); }, HINT_DELAY);
+  });
+  window.addEventListener('appinstalled', function () {
+    P.installed = true; P.installEvt = null; hideChip();
+    say('Installed — open SASTRA Map from your home screen');
+    try { if (window.campusAnalytics) window.campusAnalytics.track('app_installed', {}, 'App installed to the home screen'); } catch (e) {}
+  });
+  /* iOS Safari cannot prompt: explain once, over HTTPS, when not yet installed */
+  if (IOS_SAFARI && !standalone() && P.secure) afterReady(function () { showChip('ios'); }, HINT_DELAY);
+
+  window.SastraPWA = {
+    install: install,
+    update: function () { return P.reg ? P.reg.update().then(function () { return true; }) : Promise.resolve(false); },
+    standalone: standalone,
+    showHint: function () { lsSet(HINT_KEY, ''); showChip(IOS_SAFARI ? 'ios' : 'android'); },
+    unregister: function () {
+      var jobs = [];
+      if (navigator.serviceWorker) jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) {
+        return Promise.all(rs.map(function (r) { return r.unregister(); }));
+      }));
+      if (window.caches) jobs.push(caches.keys().then(function (ks) {
+        return Promise.all(ks.filter(function (k) { return k.indexOf('sastramap-') === 0; }).map(function (k) { return caches.delete(k); }));
+      }));
+      return Promise.all(jobs).then(function () { P.state = 'idle'; P.reg = null; P.offlineReady = false; return true; });
+    },
+    state: function () {
+      return { supported: P.supported, secure: P.secure, state: P.state, error: P.error, version: P.version,
+               registeredAt: P.registeredAt, offlineReady: P.offlineReady, updated: P.updated,
+               controlled: !!(navigator.serviceWorker && navigator.serviceWorker.controller),
+               standalone: standalone(), installable: !!P.installEvt, chip: P.chip, online: navigator.onLine,
+               bootReadyAt: window.__campusBoot ? Math.round(window.__campusBoot.readyAt || 0) : null };
+    }
+  };
+})();
+</script>
+<!-- PWA1:END shell -->
